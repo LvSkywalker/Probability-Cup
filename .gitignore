@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.*
+secrets/
+credentials.json
+token.json
+
+# Large/archive files
+*.zip
+*.tar
+*.gz
+*.7z
+*.pkl
+*.parquet
+
+# Workbooks / binary docs
+*.xlsx
+*.xls
+*.pdf
+
+# Raw data
+data/raw/*
+!data/raw/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# Temporary handoff extraction
+_handoff_tmp/
+
+# Local scratch / working directories
+scratch/
+tmp/
