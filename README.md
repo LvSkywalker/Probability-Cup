@@ -18,6 +18,18 @@ The project combines:
 - post-match RBP/Brier postmortem analysis;
 - shared CSV / dual-engine validation protocol.
 
+## Competition result
+
+Jump Trading Probability Cup on SportsPredict, 2026 — 293 settled forecasts.
+
+| | |
+|---|---|
+| Italy | **#2** on the platform's country leaderboard |
+| Politecnico di Milano | **#1** on the university leaderboard |
+| Austria vs Jordan | **#1 of 686** on the match leaderboard — 9 of 10 forecasts beat the crowd |
+| England vs Croatia | **#6 of 743** on the match leaderboard — 10 of 10 beat the crowd |
+| Crowd benchmark | **+2.0** RBP per forecast |
+
 ## Headline finding
 
 The calibration layer added during the season to make forecasts *safer* was making
@@ -66,6 +78,7 @@ docs/
   master/          Project memory and operating handbook (v5.0 current, v4.1 archived)
   pipeline/        Forecasting pipeline versions (v1.5 current)
   model_specs/     Engine/model specifications
+  competition/     Final competition results
   postmortems/     Backtests, conclusions and lessons learned
   reports/         Match reports and notes
 
