@@ -6,7 +6,7 @@ with auditable model-generated probabilities that can be improved over time.
 """
 from __future__ import annotations
 
-from distributions import (
+from .distributions import (
     clamp,
     poisson_ge,
     poisson_match_probs,

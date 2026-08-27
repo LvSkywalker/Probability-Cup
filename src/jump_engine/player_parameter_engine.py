@@ -16,7 +16,7 @@ import math
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
-from sot_gate import context_multiplier_guard, sot_bottom_up_gate
+from .sot_gate import context_multiplier_guard, sot_bottom_up_gate
 
 
 def clamp(x: float, lo: float, hi: float) -> float:
@@ -275,8 +275,12 @@ class PlayerParameterEngine:
             hard_data_override=hard_override,
             evidence_score=evidence_score,
         )
-        capped_context_mu = _float(agg.get("sot_mu"), gate.gated_mu)
-        final_mu = min(gate.gated_mu, capped_context_mu) if agg.get("sot_context_flag") == "REVIEW" else gate.gated_mu
+        # v7: no silent downward clip.  The old code did
+        #     final_mu = min(gate.gated_mu, capped_context_mu) when the context flag was REVIEW,
+        # a third one-directional cut stacked on top of the gate shrink and the context cap.
+        # The gate is now flag-only, so mu passes through and the flags travel with it in the
+        # audit dict for a human to act on.
+        final_mu = gate.gated_mu
         audit = {
             f"{prefix}sot_mu_topdown": f"{mu_topdown:.4f}",
             f"{prefix}sot_mu_bottomup": f"{mu_bottomup:.4f}",

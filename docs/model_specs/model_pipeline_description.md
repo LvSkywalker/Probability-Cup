@@ -1,60 +1,112 @@
-# Jump Trading Probability Cup – Pipeline Overview
+# Model Pipeline Overview
 
-Questo file fornisce una panoramica del modello che abbiamo implementato per stimare le probabilità negli incontri della Probability Cup. Non contiene codice eseguibile, ma descrive la logica e le principali fasi della pipeline utilizzata per produrre le percentuali mostrate nei report (ad esempio per Turchia–Paraguay o Brasile–Haiti).
+A plain-language description of how the engine turns match data into a probability.
+No executable code here — see `src/jump_engine/` for that.
 
-## 1. Classificazione delle domande
+Current as of engine v7.0. An earlier version of this document described shrinkage and
+field-bias exploitation as features; both were removed after post-competition testing.
+See [Post-Competition Conclusions](../postmortems/post_competition_conclusions.md).
 
-Ogni domanda del contest è etichettata in una delle seguenti categorie, perché le statistiche rilevanti e le distribuzioni da usare variano a seconda del tipo di evento:
+---
 
-- **Match outcome / Goals** – es. “Vittoria Turchia”, “Totale gol ≤ 2”.
-- **Team stats** – es. “Più falli”, “Più cartellini”, “Fuorigioco ≥ 2”.
-- **Player props** – es. “Enciso 1+ tiro in porta”.
-- **Rare events** – es. “Rigore o rosso”.
-- **Second‑half props** – es. “Più tiri in porta nel 2° tempo”, “Corner 2° tempo”.
+## 1. Question classification
 
-L’identificazione consente di applicare la distribuzione statistica più adeguata (Poisson, Negative Binomial, ecc.) e di calibrare la stima in modo coerente.
+Every question is labelled, because the relevant statistics and the appropriate
+distribution differ by event type:
 
-## 2. Base rate e mercato
+- **Match outcome / goals** — "Turkey win", "total goals ≤ 2"
+- **Team stats** — "more fouls", "more cards", "2+ offsides"
+- **Player props** — "Enciso 1+ shot on target"
+- **Rare events** — "penalty or red card"
+- **Period props** — "more shots on target in the second half", "second-half corners"
 
-Per ogni categoria si ricava un **base rate**: la frequenza con cui l’evento si verifica in generale (ad esempio ~30 % di rigori/espulsioni per partita). Quando esistono **quote di mercato** credibili (1X2, over/under), se ne deduce la probabilità implicita come “ancora” di riferimento. In assenza di quote, il base rate resta l’ancora.
+## 2. Base rate and market
 
-## 3. Modello statistico
+Each category has a **base rate**: how often the event happens in general (for example
+~30% for a penalty or red card in a match). Where credible **market odds** exist (1X2,
+over/under), the vig-free implied probability becomes the reference anchor. Without
+odds, the base rate is the anchor.
 
-Il cuore della pipeline sono modelli probabilistici tarati sui dati disponibili:
+## 3. Statistical model
 
-- **Match outcome / goals** – Modellati tramite distribuzioni di Poisson (o Dixon‑Coles quando possibile) sui goal attesi delle squadre. Le lambda sono stimate a partire dagli xG medi e da eventuali correzioni per forza attacco/difesa.
-- **Team stats** – Per falli, cartellini, corner e tiri/offside si usa una **Negative Binomial**. Questa distribuzione gestisce la varianza spesso superiore alla media. I parametri μ sono calcolati combinando le medie di squadra, la differenza di forza, la strategia tattica e l’arbitro.
-- **Player props** – Le probabilità di “1+ tiro in porta” sono calcolate con un **Poisson** basato su (minuti previsti/90) × (tiri per 90) × (percentuale di tiri nello specchio), aggiustato per ruolo e difficoltà dell’avversario.
-- **Rare events** – Eventi come rigore o rosso sono derivati da un modello di base‑rate con aggiustamenti per l’arbitro (se severo), lo stile di gioco e l’importanza della partita. Viene usata una combinazione di base rate e regressione logistica.
-- **Second‑half props** – Si usa ancora una Negative Binomial, ma con dispersione più alta per riflettere la maggiore varianza dovuta allo stato del match.
+- **Match outcome / goals** — Poisson (or Dixon-Coles where possible) on expected
+  goals. Lambdas estimated from average xG with attack/defence corrections.
+- **Team stats** — **Negative Binomial**, `Var = mu + alpha*mu^2`, alpha ≈ 0.18–0.22.
+  Fouls, cards, corners, shots and offsides are all overdispersed relative to Poisson,
+  and using Poisson for them produces a systematic upward bias in the tail — roughly
+  13 points at mu = 7.5, threshold 6.
+- **Player props** — Poisson on `(expected minutes / 90) × (shots per 90) ×
+  (on-target rate)`, adjusted for role, set pieces and opponent.
+- **Rare events** — base-rate model with referee, style and match-importance
+  adjustments.
+- **Period props** — Negative Binomial with higher dispersion (alpha ≈ 0.30) to reflect
+  game-state variance.
 
-## 4. Aggiustamenti contestuali
+Model selection was tested on a 301-match rolling backtest:
 
-Le stime grezze vengono modificate in base a:
+| Model | Brier |
+|---|---|
+| **NegBin** | **0.2030** |
+| BivarNB | 0.2032 |
+| COM-Poisson | 0.2038 |
+| Poisson | 0.2057 |
+| WeibullCount | 0.2065 |
 
-- **Line‑up previste** – Presenza o meno di titolari chiave, moduli tattici e minutaggi attesi.
-- **Arbitro** – Numero medio di cartellini e rigori concessi.
-- **Importanza della partita** – Necessità di vittoria, match da dentro/fuori, potenziale gestione del risultato.
-- **Meteo/condizioni** – Quando disponibili, elementi come vento o pioggia possono influenzare il numero di corner o tiri.
+## 4. Contextual adjustments
 
-## 5. Stima del bias del field
+Applied to **inputs**, before the model runs:
 
-Poiché la classifica del contest dipende dal **Brier score relativo** (la differenza tra il proprio errore e la media del field), stimiamo come la massa di partecipanti potrebbe sovra‑ o sottovalutare certi mercati. Ad esempio, i partecipanti tendono a sovrastimare la probabilità di rigori e rossi o a sottostimare i falli delle squadre sfavorite. Le nostre previsioni sono leggermente spostate per sfruttare questi bias.
+- **Expected lineups** — key starters, shape, expected minutes
+- **Referee** — average cards and penalties awarded
+- **Match importance** — must-win, knockout, possible game management
+- **Weather** — wind and rain can affect corner and shot counts
 
-## 6. Calibrazione e shrinkage
+The ordering matters. Corrections belong on the input side. Once the model has run, the
+output is the forecast.
 
-Per evitare over‑confidence (che penalizza fortemente nel Brier score) applichiamo uno **shrinkage**: la probabilità grezza viene compressa verso l’ancora (base rate o mercato) in funzione della qualità dei dati (evidence score). Se l’evidenza è forte (più fonti concordi, dati solidi), la compressione è minima; se i dati sono scarsi o la varianza dell’evento è alta, la compressione aumenta.
+## 5. No output compression
 
-## 7. Red team e rischio correlato
+Earlier versions compressed the raw probability toward the anchor as a function of data
+quality, and shaded estimates to exploit expected field bias. Both were removed in v7.0.
 
-Prima di fissare la probabilità definitiva, la pipeline prevede un controllo “red team” che si interroga su cosa potrebbe invalidare la previsione: infortuni dell’ultimo minuto, risultati parziali (1‑0 veloce) che alterano corner e falli, condizioni meteo, ecc. Inoltre si osservano le correlazioni: se si scommette contemporaneamente su “più corner” e “più tiri nel secondo tempo” per la stessa squadra, si riconosce che le due props dipendono dallo stesso copione di gara e si evita di spingere entrambe agli estremi.
+Testing on the project's own backtests found that every level of compression degraded
+Brier monotonically, because the Negative Binomial model was already calibrated — mean
+reliability bias +1.27pp. The operating rule is now:
 
-## 8. Produzione della probabilità finale
+```text
+Apply caution to the decision, not to the probability.
+```
 
-Le componenti precedenti (modello, base rate, mercato, contesto, bias e shrinkage) vengono combinate in una media pesata. Il risultato è la percentuale da inviare alla piattaforma del contest. Le stime sono calibrate per essere competitive (più vicine alla verità del field) ma senza rischiare penalizzazioni eccessive in caso di eventi rari.
+If a forecast is not one you would submit as-is, skip the question. Do not move the
+number and submit that instead.
 
-## Utilizzo del modello
+## 6. Red team and correlated risk
 
-Questa pipeline è stata usata per generare le percentuali riportate nei nostri report, come quello per Turchia–Paraguay. Ogni riga di quel report deriva da una combinazione di dati reali (tiri, falli, xG, line‑up) e di una valutazione contestuale. Le soglie (es. 46 % per Enciso 1+ tiro in porta) non sono fisse ma cambiano in base ai parametri di input.
+Before finalising, an explicit check on what could invalidate the forecast: late
+injuries, an early goal changing the corner and foul script, weather.
 
-Per condividere questa spiegazione con un’altra persona (ad esempio Claude), puoi scaricare questo file e allegarlo alla conversazione. Se desideri avere anche gli script completi della pipeline (come Python o workbook), dovrai recuperare l’archivio ZIP generato nella sessione precedente o chiederne la rigenerazione.
+Correlation is checked too. Two props on the same match — "more corners" and "more
+second-half shots on target" for the same team — depend on the same match script, and
+the sheet as a whole must describe one coherent story.
+
+## 7. Producing the final probability
+
+The model output, the base rate and the market anchor are combined in a weighted blend
+whose weights depend on question type. Sources that are missing are dropped and the
+remaining weights renormalised, so an absent market prior transfers weight to the
+model rather than to a hand-entered base rate.
+
+The pipeline reports three numbers, never conflated:
+
+```text
+p_model    pure model output, untouched
+p_blend    p_model blended with market / base priors
+p_submit   what to submit
+```
+
+## 8. Auditability
+
+Every generated parameter is written to the output CSV: the lambdas and mus, the
+divergence flags, the multipliers, the blend components. Any forecast can be traced
+back to the assumptions that produced it, which is what made the post-competition
+review possible at all.

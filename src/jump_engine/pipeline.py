@@ -1,7 +1,19 @@
 """Run the Jump Probability Cup forecasting pipeline from CSV.
 
 Usage:
-    python src/pipeline.py --input data/turkey_paraguay_model_input.csv --output data/turkey_paraguay_final_v3.csv
+    PYTHONPATH=src python3 -m jump_engine.pipeline \
+        --input data/match_input.csv --output outputs/match_final.csv
+
+v7 output contract — three probabilities, never conflated:
+
+    p_model    pure statistical model output.  Untouched by priors, caps or gates.
+               This is the model's own opinion, reported separately so it is never
+               silently conflated with a market-blended number.
+    p_blend    p_model blended with market / base priors.
+    p_submit   what to submit.  Equals p_blend unless --apply-caps is passed.
+
+No shrinkage is applied at any stage.  See calibration.py for the backtest that
+removed it.
 """
 from __future__ import annotations
 
@@ -10,9 +22,9 @@ import csv
 from pathlib import Path
 from typing import Dict, Optional
 
-from calibration import final_probability, red_team_flags
-from model_engine import compute_model_probability
-from schema import REQUIRED_COLUMNS
+from .calibration import final_probability, red_team_flags
+from .model_engine import compute_model_probability
+from .schema import REQUIRED_COLUMNS
 
 
 def parse_optional_float(value: str) -> Optional[float]:
@@ -43,7 +55,7 @@ def validate_headers(headers: list[str]) -> None:
         raise ValueError(f"Missing required columns: {missing}")
 
 
-def process_row(row: Dict[str, str], winner_mode: bool = True) -> Dict[str, str]:
+def process_row(row: Dict[str, str], apply_caps: bool = False) -> Dict[str, str]:
     market_type = row["market_type"].strip()
     base_prob = parse_optional_float(row["base_prob"])
     if base_prob is None:
@@ -62,7 +74,7 @@ def process_row(row: Dict[str, str], winner_mode: bool = True) -> Dict[str, str]
     expected_field_prob = parse_optional_float(row.get("expected_field_prob", ""))
     evidence_score = parse_optional_float(row.get("evidence_score", ""))
 
-    raw, anchor, coeff, shrunk, final = final_probability(
+    p_model, p_blend, anchor, p_submit = final_probability(
         market_type=market_type,
         base_prob=base_prob,
         market_prob=market_prob,
@@ -70,22 +82,22 @@ def process_row(row: Dict[str, str], winner_mode: bool = True) -> Dict[str, str]
         context_adj=context_adj,
         confidence=confidence,
         evidence_score=evidence_score,
-        winner_mode=winner_mode,
+        apply_caps=apply_caps,
     )
-    flags = red_team_flags(market_type, final, expected_field_prob, evidence_score, model_prob, market_prob)
-    edge_vs_field = "" if expected_field_prob is None else f"{(final - expected_field_prob) * 100:.1f}pp"
+    flags = red_team_flags(market_type, p_submit, expected_field_prob, evidence_score, model_prob, market_prob)
+    edge_vs_field = "" if expected_field_prob is None else f"{(p_submit - expected_field_prob) * 100:.1f}pp"
 
     out = dict(row)
     out.update(
         {
             "generated_model_probability": "" if generated_model_prob is None else f"{generated_model_prob:.4f}",
             "used_model_probability": "" if model_prob is None else f"{model_prob:.4f}",
-            "anchor_probability": f"{anchor:.4f}",
-            "shrink_coeff": f"{coeff:.2f}",
-            "raw_probability": f"{raw:.4f}",
-            "shrunk_probability": f"{shrunk:.4f}",
-            "final_probability": f"{final:.4f}",
-            "submit_probability_0_100": str(round(final * 100)),
+            "p_model": f"{p_model:.4f}",
+            "p_blend": f"{p_blend:.4f}",
+            "p_submit": f"{p_submit:.4f}",
+            "anchor_probability_diagnostic": f"{anchor:.4f}",
+            "caps_applied": "yes" if apply_caps else "no",
+            "submit_probability_0_100": str(round(p_submit * 100)),
             "edge_vs_expected_field": edge_vs_field,
             "red_team_flags": " | ".join(flags),
             "update_triggers": "lineups; injuries/suspensions; referee; weather; tactical news; market move",
@@ -94,21 +106,21 @@ def process_row(row: Dict[str, str], winner_mode: bool = True) -> Dict[str, str]
     return out
 
 
-def run(input_path: Path, output_path: Path, winner_mode: bool = True) -> None:
+def run(input_path: Path, output_path: Path, apply_caps: bool = False) -> None:
     with input_path.open("r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         validate_headers(reader.fieldnames or [])
-        rows = [process_row(row, winner_mode=winner_mode) for row in reader]
+        rows = [process_row(row, apply_caps=apply_caps) for row in reader]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     extra_cols = [
         "generated_model_probability",
         "used_model_probability",
-        "anchor_probability",
-        "shrink_coeff",
-        "raw_probability",
-        "shrunk_probability",
-        "final_probability",
+        "p_model",
+        "p_blend",
+        "p_submit",
+        "anchor_probability_diagnostic",
+        "caps_applied",
         "submit_probability_0_100",
         "edge_vs_expected_field",
         "red_team_flags",
@@ -125,6 +137,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--safe-mode", action="store_true", help="Use normal caps; default is winner mode.")
+    parser.add_argument(
+        "--apply-caps",
+        action="store_true",
+        help="Opt in to the legacy hard probability caps. Measurably worsens Brier "
+             "on the project backtest — see calibration.py. Off by default.",
+    )
     args = parser.parse_args()
-    run(args.input, args.output, winner_mode=not args.safe_mode)
+    run(args.input, args.output, apply_caps=args.apply_caps)

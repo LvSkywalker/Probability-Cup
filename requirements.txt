@@ -1,0 +1,8 @@
+# The engine, the pipeline and the test suites run on the Python standard library only.
+#
+#     ./run_tests.sh
+#
+# Optional, only for re-running the count-model research backtests:
+# pandas>=2.0
+# numpy>=1.24
+# pytest>=8.0

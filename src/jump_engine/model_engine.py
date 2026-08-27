@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-from stat_models import (
+from .stat_models import (
     match_win_probability,
     total_goals_le_probability,
     relative_team_stat_probability,

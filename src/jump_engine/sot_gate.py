@@ -11,6 +11,34 @@ SOT-3  Single-match shrinkage: MD1/top-down evidence is directional, not a basel
 SOT-4  Relative 2H SOT data gate: no hard caps, but >60% requires bottom-up support.
 SOT-5  Context multiplier double-counting guard: cap context product unless hard-data override.
 
+v7 CHANGE — THE GATE IS A FLAG, NOT A CORRECTOR (modify_mu=False by default)
+---------------------------------------------------------------------------
+Backtest on data/backtests/historical_sot_gate_backtest.csv (8127 synthetic SOT
+props, cluster bootstrap over matches) found no evidence that shrinking mu toward
+bottom-up improves anything, and a consistently negative point estimate:
+
+    all rows                    delta Brier -0.0018   CI95 [-0.0059, +0.0021]
+    divergence >30%             delta Brier -0.0107   CI95 [-0.0265, +0.0050]
+    divergence >30%, >=2021     delta Brier -0.0161   CI95 [-0.0334, +0.0017]
+
+Isolating the estimators on team_sot props with divergence >30% gives a perfectly
+monotone ordering — the more weight on bottom-up, the worse the forecast:
+
+    top-down only   Brier 0.1963
+    50/50 average   Brier 0.2018
+    gated (0.65)    Brier 0.2086
+    bottom-up only  Brier 0.2342
+
+The gate is also systematically directional: bottom-up is lower than top-down in
+74% of cases, so "coherence check" was in practice a constant downward push on mu.
+
+WHY IT IS KEPT ANYWAY: in that backtest the top-down model is a rolling multi-match
+estimator, already decent.  The Uruguay 6+ SOT failure came from a top-down built on
+a SINGLE match (10 SOT vs Saudi Arabia).  The backtest contains no such row, so it
+cannot test that case.  The divergence number is a good detector of a rotten input;
+it is not a good corrector of mu.  Set modify_mu=True only if you have re-run the
+backtest with your own bottom-up data and shown it helps.
+
 Important: these are gates/audits, not blind optimizers. A REVIEW/BLOCK flag means
 "do not submit without explanation", not "the number is impossible".
 """
@@ -19,7 +47,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from distributions import clamp, negbin_cdf, negbin_ge, negbin_pmf, prob_a_greater_b_nb
+from .distributions import clamp, negbin_cdf, negbin_ge, negbin_pmf, prob_a_greater_b_nb
 
 
 @dataclass
@@ -92,12 +120,18 @@ def sot_bottom_up_gate(
     evidence_score: Optional[float] = None,
     hard_data_override: bool = False,
     min_mu: float = 0.01,
+    modify_mu: bool = False,
 ) -> SOTGateResult:
-    """Compare top-down and bottom-up SOT lambdas and return an audited mu.
+    """Compare top-down and bottom-up SOT lambdas and report divergence.
 
-    - If coherent (<= divergence_threshold), use the average of the two.
-    - If divergent, shrink toward bottom-up.
-    - If very divergent (> block_threshold), flag BLOCK unless hard_data_override=True.
+    v7 default (modify_mu=False): `gated_mu` is returned UNCHANGED as the top-down mu.
+    The function reports `divergence` and a `flag` of OK / REVIEW / BLOCK so a human
+    can inspect the inputs.  It does not silently move the forecast.
+
+    Legacy behaviour (modify_mu=True) shrinks mu toward bottom-up:
+      - coherent (<= divergence_threshold): average of the two
+      - divergent: weighted toward bottom-up
+    See the module docstring for why this is off by default.
 
     hard_data_override should only be set by an explicit external finding, e.g.
     official lineup + market/player evidence explaining why player bottom-up is too low.
@@ -105,15 +139,14 @@ def sot_bottom_up_gate(
     mt = max(float(mu_topdown), min_mu)
     mb = max(float(mu_bottomup), min_mu)
     div = relative_divergence(mt, mb)
-    # Dynamic shrink based on evidence quality (Claude fix #1).
+    # Dynamic shrink based on evidence quality.  Only reachable when modify_mu=True.
     # evidence_score=1.0 (official lineup, fresh data) → shrink 0.75 (trust bottom-up more)
     # evidence_score=0.0 (estimated, stale data) → shrink 0.55
-    # None → use the static default (backward compatible)
     if evidence_score is not None:
         shrink_to_bottomup = 0.55 + 0.20 * max(0.0, min(1.0, float(evidence_score)))
 
     if div <= divergence_threshold:
-        gated = 0.5 * (mt + mb)
+        gated = 0.5 * (mt + mb) if modify_mu else mt
         return SOTGateResult(
             mu_topdown=mt,
             mu_bottomup=mb,
@@ -124,7 +157,16 @@ def sot_bottom_up_gate(
             hard_data_override=hard_data_override,
         )
 
-    gated = shrink_to_bottomup * mb + (1.0 - shrink_to_bottomup) * mt
+    gated = (shrink_to_bottomup * mb + (1.0 - shrink_to_bottomup) * mt) if modify_mu else mt
+    if not modify_mu:
+        flag = "BLOCK" if div > block_threshold else "REVIEW"
+        note = (
+            f"SOT gate {flag} (flag only, mu unchanged): top-down={mt:.2f}, "
+            f"bottom-up={mb:.2f}, divergence={div*100:.1f}%. "
+            f"Inspect the inputs before submitting; mu stays at {mt:.2f}."
+        )
+        return SOTGateResult(mt, mb, div, gated, flag, note, hard_data_override)
+
     if hard_data_override:
         # Keep the shrink, but do not block.  The override still leaves an audit trail.
         flag = "REVIEW"
@@ -147,16 +189,35 @@ def context_multiplier_guard(
     *,
     max_multiplier: float = 1.65,
     hard_data_override: bool = False,
+    enforce_cap: bool = False,
 ) -> ContextMultiplierGuard:
-    """Guard against double-counting team strength after player bottom-up.
+    """Warn about double-counting team strength after player bottom-up.
 
     If player bottom-up already represents the actual starters, very large attack/defense/
-    possession multipliers may double-count team quality.  This caps the context product
-    unless an explicit hard-data override is set.
+    possession multipliers may double-count team quality.
+
+    v7 default (enforce_cap=False): report the multiplier and raise a REVIEW flag when it
+    exceeds max_multiplier, but do NOT cap it.  Hard caps measurably hurt Brier on the
+    project backtest (see calibration.py), and this one has never been tested at all.
+    Set enforce_cap=True to restore the old clipping behaviour.
     """
     raw = max(float(raw_bottomup_mu), 0.0)
     mult = max(float(context_multiplier), 0.0)
     max_mult = max(float(max_multiplier), 0.01)
+    if mult > max_mult and not hard_data_override and not enforce_cap:
+        return ContextMultiplierGuard(
+            raw_mu=raw,
+            multiplier=mult,
+            max_multiplier=max_mult,
+            capped_multiplier=mult,
+            capped_mu=raw * mult,
+            flag="REVIEW",
+            note=(
+                f"Context multiplier REVIEW (flag only, not capped): {mult:.2f}x > "
+                f"advisory {max_mult:.2f}x. Check for double-counting of team strength; "
+                f"mu stays at {raw*mult:.2f}."
+            ),
+        )
     if hard_data_override or mult <= max_mult:
         return ContextMultiplierGuard(
             raw_mu=raw,
@@ -196,6 +257,7 @@ def sot_threshold_audit(
     block_threshold: float = 0.60,
     shrink_to_bottomup: float = 0.65,
     hard_data_override: bool = False,
+    modify_mu: bool = False,
 ) -> SOTThresholdAudit:
     gate = sot_bottom_up_gate(
         mu_topdown,
@@ -204,6 +266,7 @@ def sot_threshold_audit(
         block_threshold=block_threshold,
         shrink_to_bottomup=shrink_to_bottomup,
         hard_data_override=hard_data_override,
+        modify_mu=modify_mu,
     )
     p = sot_threshold_prob(gate.gated_mu, threshold, alpha)
     return SOTThresholdAudit(
@@ -231,6 +294,7 @@ def sot_relative_2h_audit(
     divergence_threshold: float = 0.30,
     block_threshold: float = 0.60,
     hard_data_override: bool = False,
+    modify_mu: bool = False,
 ) -> SOTRelativeAudit:
     """Audit P(team > opponent in 2H SOT).
 
@@ -243,6 +307,7 @@ def sot_relative_2h_audit(
         divergence_threshold=divergence_threshold,
         block_threshold=block_threshold,
         hard_data_override=hard_data_override,
+        modify_mu=modify_mu,
     )
     og = sot_bottom_up_gate(
         opp_mu_topdown_total,
@@ -250,6 +315,7 @@ def sot_relative_2h_audit(
         divergence_threshold=divergence_threshold,
         block_threshold=block_threshold,
         hard_data_override=hard_data_override,
+        modify_mu=modify_mu,
     )
     mu_t_2h = max(tg.gated_mu * team_2h_share * team_2h_bump, 1e-9)
     mu_o_2h = max(og.gated_mu * opp_2h_share * opp_2h_bump, 1e-9)
