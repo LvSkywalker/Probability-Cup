@@ -26,8 +26,8 @@ Jump Trading Probability Cup on SportsPredict, 2026 — 293 settled forecasts.
 |---|---|
 | Italy | **#2** on the platform's country leaderboard |
 | Politecnico di Milano | **#1** on the university leaderboard |
-| Austria vs Jordan | **#1 of 686** on the match leaderboard — 9 of 10 forecasts beat the crowd |
-| England vs Croatia | **#6 of 743** on the match leaderboard — 10 of 10 beat the crowd |
+| Austria vs Jordan | **#1 of 686** on the match leaderboard |
+| England vs Croatia | **#6 of 743** on the match leaderboard |
 | Crowd benchmark | **+2.0** RBP per forecast |
 
 ## Headline finding
